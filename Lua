@@ -32,7 +32,10 @@ local bodyPos
 local bodyGyro
 local noclipConnection
 
--- Send a normal public chat message
+getgenv().OldPos = nil
+getgenv().FPDH = workspace.FallenPartsDestroyHeight
+
+-- Send chat notification
 local function sendChatMessage(message)
     if character and character:FindFirstChild("Head") then
         ChatService:Chat(character.Head, message, Enum.ChatColor.Blue)
@@ -77,7 +80,7 @@ local function enableAnimateScript()
     if animate then animate.Disabled = false end
 end
 
--- Find player by partial name or UserId
+-- Find player by name or UserId
 local function findPlayer(input)
     if tonumber(input) then
         local id = tonumber(input)
@@ -96,7 +99,7 @@ local function findPlayer(input)
     end
 end
 
--- Reset bot state
+-- Reset bot
 local function resetBot()
     isFollowing = false
     isFraming = false
@@ -113,60 +116,96 @@ local function resetBot()
     enableNoclip()
 end
 
--- FIXED STRONG FLING: You spin inside the target for a few seconds, then teleport back
+-- SkidFling implementation
 local function flingPlayer(target)
-    if not (target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")) then
-        sendChatMessage("Target player not valid for fling.")
+    if not (target and target.Character) then
+        sendChatMessage("Target not valid.")
         return
+    end
+
+    local TCharacter = target.Character
+    local THumanoid = TCharacter:FindFirstChildOfClass("Humanoid")
+    local TRootPart = THumanoid and THumanoid.RootPart
+    local THead = TCharacter:FindFirstChild("Head")
+    local Accessory = TCharacter:FindFirstChildOfClass("Accessory")
+    local Handle = Accessory and Accessory:FindFirstChild("Handle")
+
+    if not (character and humanoid and hrp) then
+        sendChatMessage("Your character is not ready.")
+        return
+    end
+
+    if hrp.Velocity.Magnitude < 50 then
+        getgenv().OldPos = hrp.CFrame
     end
 
     disableNoclip()
 
-    -- Enable collisions on your parts for effective fling
-    if character then
-        for _, part in ipairs(character:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.CanCollide = true
+    workspace.FallenPartsDestroyHeight = 0/0
+
+    local BV = Instance.new("BodyVelocity")
+    BV.Parent = hrp
+    BV.Velocity = Vector3.new(0,0,0)
+    BV.MaxForce = Vector3.new(9e9,9e9,9e9)
+
+    humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
+
+    local function FPos(BasePart, Pos, Ang)
+        hrp.CFrame = CFrame.new(BasePart.Position) * Pos * Ang
+        character:SetPrimaryPartCFrame(CFrame.new(BasePart.Position) * Pos * Ang)
+        hrp.Velocity = Vector3.new(9e7,9e7*10,9e7)
+        hrp.RotVelocity = Vector3.new(9e8,9e8,9e8)
+    end
+
+    local function SFBasePart(BasePart)
+        local startTime = tick()
+        local duration = 2
+        local angle = 0
+        repeat
+            if hrp and THumanoid then
+                angle = angle + 100
+                FPos(BasePart, CFrame.new(0,1.5,0), CFrame.Angles(math.rad(angle),0,0))
+                task.wait()
+                FPos(BasePart, CFrame.new(0,-1.5,0), CFrame.Angles(math.rad(angle),0,0))
+                task.wait()
             end
-        end
+        until tick()-startTime > duration
     end
 
-    local targetHRP = target.Character.HumanoidRootPart
-    local start = tick()
-    local flingDuration = 5
-
-    local originalPos = hrp.CFrame
-
-    while tick() - start < flingDuration do
-        if not targetHRP.Parent then break end
-
-        -- Teleport inside target with small random offset so you move around inside them
-        local randomOffset = Vector3.new(
-            math.random(-2, 2),
-            math.random(-2, 2),
-            math.random(-2, 2)
-        )
-        hrp.CFrame = targetHRP.CFrame * CFrame.new(randomOffset)
-
-        -- Spin your character fast
-        local spin = CFrame.Angles(
-            math.rad(math.random(-1000, 1000)),
-            math.rad(math.random(-1000, 1000)),
-            math.rad(math.random(-1000, 1000))
-        )
-        hrp.CFrame = hrp.CFrame * spin
-
-        RunService.Heartbeat:Wait()
+    if TRootPart then
+        SFBasePart(TRootPart)
+    elseif THead then
+        SFBasePart(THead)
+    elseif Handle then
+        SFBasePart(Handle)
+    else
+        sendChatMessage("No valid parts to fling.")
     end
 
-    -- Teleport back to original position (owner)
-    hrp.CFrame = originalPos
+    BV:Destroy()
+    humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
+    workspace.CurrentCamera.CameraSubject = humanoid
+
+    if getgenv().OldPos then
+        repeat
+            hrp.CFrame = getgenv().OldPos * CFrame.new(0,0.5,0)
+            character:SetPrimaryPartCFrame(getgenv().OldPos * CFrame.new(0,0.5,0))
+            humanoid:ChangeState("GettingUp")
+            for _, part in pairs(character:GetChildren()) do
+                if part:IsA("BasePart") then
+                    part.Velocity, part.RotVelocity = Vector3.new(), Vector3.new()
+                end
+            end
+            task.wait()
+        until (hrp.Position - getgenv().OldPos.p).Magnitude < 25
+        workspace.FallenPartsDestroyHeight = getgenv().FPDH
+    end
 
     enableNoclip()
     resetBot()
 end
 
--- Chat commands
+-- Hook chat commands
 local function hookPlayer(player)
     player.Chatted:Connect(function(msg)
         local lower = msg:lower()
@@ -192,7 +231,7 @@ local function hookPlayer(player)
             TeleportService:Teleport(game.PlaceId, localPlayer)
 
         elseif lower:match("^%.fling ") then
-            local tname = msg:sub(msg:find(" ") + 1)
+            local tname = msg:sub(msg:find(" ")+1)
             local target = findPlayer(tname)
             if target then
                 coroutine.wrap(function()
@@ -203,7 +242,7 @@ local function hookPlayer(player)
             end
 
         elseif lower:match("^%.frame ") then
-            local tname = msg:sub(msg:find(" ") + 1)
+            local tname = msg:sub(msg:find(" ")+1)
             local target = findPlayer(tname)
             if target then
                 isFollowing = false
@@ -219,17 +258,16 @@ local function hookPlayer(player)
             end
 
         elseif lower:match("^%.userid ") then
-            local nameQuery = msg:sub(msg:find(" ") + 1)
+            local nameQuery = msg:sub(msg:find(" ")+1)
             local found = nil
             for _, p in ipairs(Players:GetPlayers()) do
-                if p.Name:lower():sub(1, #nameQuery) == nameQuery:lower() then
+                if p.Name:lower():sub(1,#nameQuery)==nameQuery:lower() then
                     found = p
                     break
                 end
             end
             if found then
-                local message = string.format("Username: %s | UserId: %d", found.Name, found.UserId)
-                sendChatMessage(message)
+                sendChatMessage("Username: "..found.Name.." | UserId: "..found.UserId)
             else
                 sendChatMessage("Player not found.")
             end
@@ -241,9 +279,9 @@ local function hookPlayer(player)
             coroutine.wrap(function()
                 while isVanished and hrp do
                     hrp.CFrame = CFrame.new(
-                        math.random(-5000, 5000),
-                        math.random(3000, 6000),
-                        math.random(-5000, 5000)
+                        math.random(-5000,5000),
+                        math.random(3000,6000),
+                        math.random(-5000,5000)
                     )
                     wait(0.5)
                 end
@@ -286,7 +324,7 @@ local function setupCharacter(newChar)
     resetBot()
 end
 
--- Hook existing players
+-- Hook all players
 for _, p in ipairs(Players:GetPlayers()) do
     if p ~= localPlayer then
         hookPlayer(p)
@@ -299,31 +337,24 @@ Players.PlayerAdded:Connect(function(p)
     end
 end)
 
--- CharacterAdded handler
 localPlayer.CharacterAdded:Connect(setupCharacter)
-
--- Initial setup
 setupCharacter(localPlayer.Character or localPlayer.CharacterAdded:Wait())
 
 -- Follow/frame loop
 RunService.Heartbeat:Connect(function(dt)
     bounceTime = bounceTime + dt
-    local bounceHeight = math.sin(bounceTime * 2) * 2
     if not hrp or isVanished then return end
+    local bounceHeight = math.sin(bounceTime*2)*2
 
     if isFollowing and followTarget and followTarget.Character and followTarget.Character:FindFirstChild("HumanoidRootPart") then
         local tHRP = followTarget.Character.HumanoidRootPart
-        local desired = tHRP.Position + tHRP.CFrame.LookVector * -5 + Vector3.new(0, 5 + bounceHeight, 0)
-        bodyPos.Position = desired
+        bodyPos.Position = tHRP.Position + tHRP.CFrame.LookVector*-5 + Vector3.new(0,5+bounceHeight,0)
         bodyGyro.CFrame = CFrame.new(hrp.Position, hrp.Position + tHRP.CFrame.LookVector)
-
     elseif isFraming and frameTarget and frameTarget.Character and frameTarget.Character:FindFirstChild("HumanoidRootPart") then
         local tHRP = frameTarget.Character.HumanoidRootPart
-        local desired = tHRP.Position + Vector3.new(0, 5 + bounceHeight, -5)
-        bodyPos.Position = desired
+        bodyPos.Position = tHRP.Position + Vector3.new(0,5+bounceHeight,-5)
         bodyGyro.CFrame = tHRP.CFrame
     end
 end)
 
--- Start noclip
 enableNoclip()
