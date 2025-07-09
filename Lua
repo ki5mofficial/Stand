@@ -1,0 +1,329 @@
+-- Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TeleportService = game:GetService("TeleportService")
+local ChatService = game:GetService("Chat")
+
+-- Local references
+local localPlayer = Players.LocalPlayer
+
+-- CONFIG
+local WHITELISTED_USERIDS = {
+    [10852209] = true,
+    [8646514971] = true,
+    [8865670903] = true,
+    -- Add your UserId here to allow control
+}
+
+-- STATE
+local isFollowing = false
+local isFraming = false
+local followTarget = nil
+local frameTarget = nil
+local originPosition = nil
+local bounceTime = 0
+local isVanished = false
+
+-- Dynamic references
+local character
+local hrp
+local humanoid
+local bodyPos
+local bodyGyro
+local noclipConnection
+
+-- Send a normal public chat message
+local function sendChatMessage(message)
+    if character and character:FindFirstChild("Head") then
+        ChatService:Chat(character.Head, message, Enum.ChatColor.Blue)
+    else
+        print("Chat message:", message)
+    end
+end
+
+-- Noclip
+local function enableNoclip()
+    if noclipConnection then noclipConnection:Disconnect() end
+    noclipConnection = RunService.Stepped:Connect(function()
+        if character then
+            for _, part in ipairs(character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end)
+end
+
+local function disableNoclip()
+    if noclipConnection then noclipConnection:Disconnect() end
+    if character then
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = true
+            end
+        end
+    end
+end
+
+-- Animate helpers
+local function disableAnimateScript()
+    local animate = character and character:FindFirstChild("Animate")
+    if animate then animate.Disabled = true end
+end
+
+local function enableAnimateScript()
+    local animate = character and character:FindFirstChild("Animate")
+    if animate then animate.Disabled = false end
+end
+
+-- Find player by partial name or UserId
+local function findPlayer(input)
+    if tonumber(input) then
+        local id = tonumber(input)
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.UserId == id then
+                return p
+            end
+        end
+    else
+        input = input:lower()
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.Name:lower():sub(1, #input) == input then
+                return p
+            end
+        end
+    end
+end
+
+-- Reset bot state
+local function resetBot()
+    isFollowing = false
+    isFraming = false
+    followTarget = nil
+    frameTarget = nil
+    enableAnimateScript()
+    if bodyPos then bodyPos.MaxForce = Vector3.zero end
+    if bodyGyro then bodyGyro.MaxTorque = Vector3.zero end
+    if hrp and originPosition then
+        hrp.CFrame = CFrame.new(originPosition)
+        bodyPos.Position = originPosition
+        bodyGyro.CFrame = hrp.CFrame
+    end
+    enableNoclip()
+end
+
+-- FIXED STRONG FLING: You spin inside the target for a few seconds, then teleport back
+local function flingPlayer(target)
+    if not (target and target.Character and target.Character:FindFirstChild("HumanoidRootPart")) then
+        sendChatMessage("Target player not valid for fling.")
+        return
+    end
+
+    disableNoclip()
+
+    -- Enable collisions on your parts for effective fling
+    if character then
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = true
+            end
+        end
+    end
+
+    local targetHRP = target.Character.HumanoidRootPart
+    local start = tick()
+    local flingDuration = 5
+
+    local originalPos = hrp.CFrame
+
+    while tick() - start < flingDuration do
+        if not targetHRP.Parent then break end
+
+        -- Teleport inside target with small random offset so you move around inside them
+        local randomOffset = Vector3.new(
+            math.random(-2, 2),
+            math.random(-2, 2),
+            math.random(-2, 2)
+        )
+        hrp.CFrame = targetHRP.CFrame * CFrame.new(randomOffset)
+
+        -- Spin your character fast
+        local spin = CFrame.Angles(
+            math.rad(math.random(-1000, 1000)),
+            math.rad(math.random(-1000, 1000)),
+            math.rad(math.random(-1000, 1000))
+        )
+        hrp.CFrame = hrp.CFrame * spin
+
+        RunService.Heartbeat:Wait()
+    end
+
+    -- Teleport back to original position (owner)
+    hrp.CFrame = originalPos
+
+    enableNoclip()
+    resetBot()
+end
+
+-- Chat commands
+local function hookPlayer(player)
+    player.Chatted:Connect(function(msg)
+        local lower = msg:lower()
+        if not WHITELISTED_USERIDS[player.UserId] then return end
+
+        if lower == ".follow" then
+            isFollowing = true
+            isFraming = false
+            followTarget = player
+            frameTarget = nil
+            bodyPos.MaxForce = Vector3.one * 1e6
+            bodyGyro.MaxTorque = Vector3.one * 1e6
+            disableAnimateScript()
+            enableNoclip()
+
+        elseif lower == ".return" or lower == ".stop" then
+            resetBot()
+
+        elseif lower == ".reset" then
+            if humanoid then humanoid.Health = 0 end
+
+        elseif lower == ".rejoin" then
+            TeleportService:Teleport(game.PlaceId, localPlayer)
+
+        elseif lower:match("^%.fling ") then
+            local tname = msg:sub(msg:find(" ") + 1)
+            local target = findPlayer(tname)
+            if target then
+                coroutine.wrap(function()
+                    flingPlayer(target)
+                end)()
+            else
+                sendChatMessage("Player not found for fling.")
+            end
+
+        elseif lower:match("^%.frame ") then
+            local tname = msg:sub(msg:find(" ") + 1)
+            local target = findPlayer(tname)
+            if target then
+                isFollowing = false
+                isFraming = true
+                followTarget = nil
+                frameTarget = target
+                bodyPos.MaxForce = Vector3.one * 1e6
+                bodyGyro.MaxTorque = Vector3.one * 1e6
+                disableAnimateScript()
+                enableNoclip()
+            else
+                sendChatMessage("Player not found for frame.")
+            end
+
+        elseif lower:match("^%.userid ") then
+            local nameQuery = msg:sub(msg:find(" ") + 1)
+            local found = nil
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p.Name:lower():sub(1, #nameQuery) == nameQuery:lower() then
+                    found = p
+                    break
+                end
+            end
+            if found then
+                local message = string.format("Username: %s | UserId: %d", found.Name, found.UserId)
+                sendChatMessage(message)
+            else
+                sendChatMessage("Player not found.")
+            end
+
+        elseif lower == ".vanish" then
+            isVanished = true
+            disableAnimateScript()
+            disableNoclip()
+            coroutine.wrap(function()
+                while isVanished and hrp do
+                    hrp.CFrame = CFrame.new(
+                        math.random(-5000, 5000),
+                        math.random(3000, 6000),
+                        math.random(-5000, 5000)
+                    )
+                    wait(0.5)
+                end
+            end)()
+
+        elseif lower == ".unvanish" then
+            isVanished = false
+            resetBot()
+        end
+    end)
+end
+
+-- Character setup
+local function setupCharacter(newChar)
+    character = newChar
+    hrp = character:WaitForChild("HumanoidRootPart")
+    humanoid = character:WaitForChild("Humanoid")
+
+    if not originPosition then
+        originPosition = hrp.Position
+    end
+
+    if bodyPos then bodyPos:Destroy() end
+    if bodyGyro then bodyGyro:Destroy() end
+
+    bodyPos = Instance.new("BodyPosition")
+    bodyPos.MaxForce = Vector3.zero
+    bodyPos.P = 15000
+    bodyPos.D = 500
+    bodyPos.Position = hrp.Position
+    bodyPos.Parent = hrp
+
+    bodyGyro = Instance.new("BodyGyro")
+    bodyGyro.MaxTorque = Vector3.zero
+    bodyGyro.P = 15000
+    bodyGyro.D = 300
+    bodyGyro.CFrame = hrp.CFrame
+    bodyGyro.Parent = hrp
+
+    resetBot()
+end
+
+-- Hook existing players
+for _, p in ipairs(Players:GetPlayers()) do
+    if p ~= localPlayer then
+        hookPlayer(p)
+    end
+end
+
+Players.PlayerAdded:Connect(function(p)
+    if p ~= localPlayer then
+        hookPlayer(p)
+    end
+end)
+
+-- CharacterAdded handler
+localPlayer.CharacterAdded:Connect(setupCharacter)
+
+-- Initial setup
+setupCharacter(localPlayer.Character or localPlayer.CharacterAdded:Wait())
+
+-- Follow/frame loop
+RunService.Heartbeat:Connect(function(dt)
+    bounceTime = bounceTime + dt
+    local bounceHeight = math.sin(bounceTime * 2) * 2
+    if not hrp or isVanished then return end
+
+    if isFollowing and followTarget and followTarget.Character and followTarget.Character:FindFirstChild("HumanoidRootPart") then
+        local tHRP = followTarget.Character.HumanoidRootPart
+        local desired = tHRP.Position + tHRP.CFrame.LookVector * -5 + Vector3.new(0, 5 + bounceHeight, 0)
+        bodyPos.Position = desired
+        bodyGyro.CFrame = CFrame.new(hrp.Position, hrp.Position + tHRP.CFrame.LookVector)
+
+    elseif isFraming and frameTarget and frameTarget.Character and frameTarget.Character:FindFirstChild("HumanoidRootPart") then
+        local tHRP = frameTarget.Character.HumanoidRootPart
+        local desired = tHRP.Position + Vector3.new(0, 5 + bounceHeight, -5)
+        bodyPos.Position = desired
+        bodyGyro.CFrame = tHRP.CFrame
+    end
+end)
+
+-- Start noclip
+enableNoclip()
