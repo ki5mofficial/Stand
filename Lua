@@ -11,6 +11,7 @@ local localPlayer = Players.LocalPlayer
 local WHITELISTED_USERIDS = {
     [10852209] = true,
     [8646514971] = true,
+    [8882273087] = true,
     [8865670903] = true,
     -- Add your UserId here to allow control
 }
